@@ -35,6 +35,13 @@ jobs:
             echo "is_tag=false" >> $GITHUB_ENV
           fi
 
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build local image for testing
         uses: docker/build-push-action@v5
         with:
@@ -49,13 +56,6 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:${{ env.VERSION }}
-
-      - name: Log in to GitHub Container Registry (for test pull)
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run container and test
         run: |
