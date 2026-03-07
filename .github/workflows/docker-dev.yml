@@ -1,5 +1,9 @@
 name: Build and Test Docker Image (dev)
 
+permissions:
+  contents: read
+  packages: write
+
 on:
   push:
     branches:
