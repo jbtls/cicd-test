@@ -11,8 +11,7 @@ COPY lighttpd.conf /etc/lighttpd/lighttpd.conf
 
 # Add site content and ensure correct permissions to avoid 403 Forbidden
 COPY index.html /var/www/html/index.html
-RUN mkdir -p /var/www/html && \
-    chown -R www-data:www-data /var/www/html
+RUN chown -R www-data:www-data /var/www/html
 
 EXPOSE 8080
 
