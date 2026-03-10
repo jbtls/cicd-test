@@ -36,9 +36,7 @@ jobs:
           platforms: linux/amd64,linux/arm64  # Multi-Arch!
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:dev
-          provenance: false  # Verhindert sha256-Einträge durch Attestations
-          sbom: false        # Spart zusätzlich Platz/Müll
-          
+
       - name: Run container and test
         run: |
           docker run -d --name test-webserver -p 8080:8080 ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:dev
@@ -46,3 +44,15 @@ jobs:
           curl -f http://127.0.0.1:8080 | grep 'It works! (lighttpd)'
           docker stop test-webserver
           docker rm test-webserver
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Delete untagged images
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: 'lighttpd-webserver'
+          package-type: 'container'
+          min-versions-to-keep: 1
+          delete-only-untagged-versions: 'true'
