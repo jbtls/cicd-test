@@ -1,5 +1,13 @@
+# Dieser Workflow läuft bei Pushes auf "main", bei Pull Requests auf "main"
+# sowie bei Version-Tags (z. B. v1.0.0).
+# Build und Test werden immer ausgeführt. Ein Push in die Registry findet
+# nur statt, wenn ein Version-Tag gesetzt wurde.
 name: Build and Push Docker Image (main)
 
+# Auslöser:
+#   push → tags 'v*':   z. B. "v1.2.3" – löst die Veröffentlichung in GHCR aus
+#   push → main:        z. B. nach einem Merge – baut und testet, aber kein Push
+#   pull_request:       Überprüft den Code vor dem Merge in main
 on:
   push:
     tags:
@@ -10,6 +18,9 @@ on:
     branches:
       - main
 
+# Berechtigungen, die dieser Workflow benötigt:
+#   - contents: read  → Lesezugriff auf den Repository-Code (für checkout)
+#   - packages: write → Schreibzugriff auf GHCR, um Images zu pushen
 permissions:
   contents: read
   packages: write
@@ -18,58 +29,84 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      # Schritt 1: Den aktuellen Stand des Repositories herunterladen
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up QEMU  # Neu: Für Cross-Builds
+      # Schritt 2: QEMU einrichten
+      #   QEMU ist eine Emulationsschicht, die es dem Runner erlaubt,
+      #   Images für andere CPU-Architekturen (z. B. ARM) zu bauen.
+      - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
+      # Schritt 3: Docker Buildx einrichten
+      #   Buildx ist ein erweiterter Docker-Build-Treiber, der Multi-Arch-Builds
+      #   und weitere Features wie Cache-Export unterstützt.
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Schritt 4: Image lokal bauen (noch kein Push in die Registry)
+      #   "load: true" lädt das fertige Image in den lokalen Docker-Daemon des
+      #   Runners, damit wir es im nächsten Schritt starten und testen können.
+      - name: Build image locally for testing
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          load: true
+          tags: lighttpd-webserver:test
 
-      - name: Check if this run is for a tag and set VERSION
-        id: check_tag
+      # Schritt 5: Container starten und testen
+      #   --rm:  Container wird nach dem Stoppen automatisch entfernt (kein manuelles Aufräumen nötig).
+      #   Wir verwenden eine Retry-Schleife, die bis zu 30 Sekunden wartet –
+      #   curl und grep werden mit && verknüpft, damit ein Fehler von curl auch den Step fehlschlagen lässt
+      #   (in einer Pipe "curl | grep" würde der curl-Fehler sonst unbemerkt verschwinden).
+      - name: Run and test container
         run: |
-          if [[ "${GITHUB_REF#refs/tags/}" != "$GITHUB_REF" ]]; then
-            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-            echo "is_tag=true" >> $GITHUB_ENV
-          else
-            echo "is_tag=false" >> $GITHUB_ENV
-          fi
+          docker run -d --rm --name test-server -p 8080:8080 lighttpd-webserver:test
+          timeout 30 bash -c 'until curl -sf http://127.0.0.1:8080; do sleep 1; done'
+          curl -f http://127.0.0.1:8080 -o response.html && grep 'It works!' response.html
+          docker stop test-server
 
+      # Schritt 6: Container-Cleanup sicherstellen
+      #   "if: always()" stellt sicher, dass dieser Schritt auch dann ausgeführt wird,
+      #   wenn Schritt 5 fehlgeschlagen ist – z. B. wenn der Test selbst abstürzt.
+      #   "|| true" verhindert, dass ein Fehler (Container läuft nicht) den Workflow abbricht.
+      - name: Cleanup test container
+        if: always()
+        run: docker stop test-server 2>/dev/null || true
+
+      # Schritt 7: Beim GHCR anmelden
+      #   Wird bei Pull Requests übersprungen: Dort findet kein Push statt, und
+      #   bei Fork-PRs hätte der GITHUB_TOKEN ohnehin keine Schreibrechte.
+      #   "github.actor" ist der Benutzer, der den Workflow ausgelöst hat.
+      #   "GITHUB_TOKEN" ist ein automatisch bereitgestelltes Token – kein manuelles Secret nötig.
       - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build local image for testing
+      # Schritt 8: Image veröffentlichen – nur bei Version-Tags (z. B. v1.2.3)
+      #   Es werden zwei Tags gesetzt:
+      #     - Der konkrete Versionsname (z. B. ghcr.io/.../lighttpd-webserver:v1.2.3)
+      #     - "latest" damit "docker pull" ohne Tag immer das neueste Release liefert
+      #   linux/amd64: Standard-PCs und Server (x86_64)
+      #   linux/arm64: ARM-Geräte wie Raspberry Pi oder Apple Silicon
+      #   provenance: false und sbom: false deaktivieren das Einbetten von
+      #   Attestierungs-Manifesten in die Manifest-Liste. Ohne diese Einstellung
+      #   fügt buildx zusätzliche Einträge mit "architecture: unknown" hinzu,
+      #   die Clients wie podman beim Pull verwirren und einen Fehler auslösen.
+      - name: Push to GHCR (only for version tags)
+        if: github.ref_type == 'tag'
         uses: docker/build-push-action@v5
         with:
           context: .
-          load: true
-          tags: local/lighttpd-webserver:${{ github.sha }}
-
-      - name: Push to GHCR (only for tag refs)
-        if: env.is_tag == 'true'
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64  # Multi-Arch!
+          platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:${{ env.VERSION }}
-
-      - name: Run container and test
-        run: |
-          if [ "${{ env.is_tag }}" = "true" ]; then
-            IMAGE=ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:${{ env.VERSION }}
-          else
-            IMAGE=local/lighttpd-webserver:${{ github.sha }}
-          fi
-          docker run -d --name test-webserver -p 8080:8080 $IMAGE
-          sleep 5
-          curl -f http://127.0.0.1:8080 | grep 'It works! (lighttpd)'
-          docker stop test-webserver
-          docker rm test-webserver
+          provenance: false
+          sbom: false
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:latest
