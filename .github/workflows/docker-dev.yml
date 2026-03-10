@@ -36,7 +36,9 @@ jobs:
           platforms: linux/amd64,linux/arm64  # Multi-Arch!
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:dev
-
+          provenance: false  # Verhindert sha256-Einträge durch Attestations
+          sbom: false        # Spart zusätzlich Platz/Müll
+          
       - name: Run container and test
         run: |
           docker run -d --name test-webserver -p 8080:8080 ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:dev
