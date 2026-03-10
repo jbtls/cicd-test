@@ -94,22 +94,3 @@ jobs:
           provenance: false
           sbom: false
           tags: ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:dev
-
-  # Job 2: Aufräumen nach dem Build
-  #   Dieser Job startet erst, wenn Job 1 vollständig und erfolgreich abgeschlossen ist.
-  cleanup:
-    needs: build-and-test
-    runs-on: ubuntu-latest
-    permissions:
-      packages: write
-    steps:
-      # Löscht alle Images in GHCR ohne Tag (sogenannte "untagged"-Images).
-      # Diese entstehen z. B. durch provenance-Metadaten beim Multi-Arch-Build.
-      # min-versions-to-keep: 1 stellt sicher, dass mindestens 1 Version erhalten bleibt.
-      - name: Delete untagged images
-        uses: actions/delete-package-versions@v5
-        with:
-          package-name: 'lighttpd-webserver'
-          package-type: 'container'
-          min-versions-to-keep: 1
-          delete-only-untagged-versions: 'true'
