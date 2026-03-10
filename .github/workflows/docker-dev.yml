@@ -10,7 +10,7 @@ on:
       - dev
 
 jobs:
-  build-test:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -36,17 +36,9 @@ jobs:
           platforms: linux/amd64,linux/arm64  # Multi-Arch!
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:dev
-
-      - name: Run container and test
-        run: |
-          docker run -d --name test-webserver -p 8080:8080 ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:dev
-          sleep 5
-          curl -f http://127.0.0.1:8080 | grep 'It works! (lighttpd)'
-          docker stop test-webserver
-          docker rm test-webserver
   cleanup:
     runs-on: ubuntu-latest
-    needs: build-test
+    needs: build
     permissions:
       packages: write
     steps:
@@ -57,3 +49,13 @@ jobs:
           package-type: 'container'
           min-versions-to-keep: 0
           delete-only-untagged-versions: 'true'
+  test:
+    needs: build
+    steps:
+      - name: Run container and test
+        run: |
+          docker run -d --name test-webserver -p 8080:8080 ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:dev
+          sleep 5
+          curl -f http://127.0.0.1:8080 | grep 'It works! (lighttpd)'
+          docker stop test-webserver
+          docker rm test-webserver
