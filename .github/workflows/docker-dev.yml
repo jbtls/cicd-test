@@ -1,38 +1,76 @@
+# Dieser Workflow wird bei jedem Push auf den "dev"-Branch ausgeführt.
+# Er baut das Docker-Image, testet es lokal und lädt es anschließend in die
+# GitHub Container Registry (GHCR) unter dem Tag "dev".
 name: Build and Test Docker Image (dev)
 
+# Berechtigungen, die dieser Workflow benötigt:
+#   - contents: read  → Lesezugriff auf den Repository-Code (für checkout)
+#   - packages: write → Schreibzugriff auf GHCR, um Images zu pushen
 permissions:
   contents: read
   packages: write
 
+# Auslöser: Dieser Workflow startet nur bei Pushes auf den "dev"-Branch.
 on:
   push:
     branches:
       - dev
+
 jobs:
-  build-and-test: 
+  # Job 1: Image bauen, testen und in die Registry pushen
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      # Schritt 1: Den aktuellen Stand des Repositories herunterladen
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      # 1. Image LOKAL bauen (noch nicht pushen!)
-      - name: Build local for testing
+      # Schritt 2: QEMU einrichten
+      #   QEMU ist eine Emulationsschicht, die es dem Runner erlaubt,
+      #   Images für andere CPU-Architekturen (z. B. ARM) zu bauen.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # Schritt 3: Docker Buildx einrichten
+      #   Buildx ist ein erweiterter Docker-Build-Treiber, der Multi-Arch-Builds
+      #   und weitere Features wie Cache-Export unterstützt.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Schritt 4: Image lokal bauen (noch kein Push in die Registry)
+      #   "load: true" lädt das fertige Image in den lokalen Docker-Daemon des
+      #   Runners, damit wir es im nächsten Schritt starten und testen können.
+      - name: Build image locally for testing
         uses: docker/build-push-action@v5
         with:
           context: .
-          load: true # Lädt das Image in den lokalen Docker-Daemon des Runners
+          load: true
           tags: lighttpd-webserver:test
 
-      # 2. LOKAL testen
-      - name: Run test
+      # Schritt 5: Container starten und testen
+      #   --rm:  Container wird nach dem Stoppen automatisch entfernt (kein manuelles Aufräumen nötig).
+      #   Wir verwedenden eine Retry-Schleife, die bis zu 30 Sekunden wartet –
+      #   curl und grep werden mit && verknüpft, damit ein Fehler von curl auch den Step fehlschlagen lässt
+      #   (in einer Pipe "curl | grep" würde der curl-Fehler sonst unbemerkt verschwinden).
+      - name: Run and test container
         run: |
-          docker run -d --name test-server -p 8080:8080 lighttpd-webserver:test
-          sleep 5
-          curl -f http://127.0.0.1:8080 | grep 'It works!'
+          docker run -d --rm --name test-server -p 8080:8080 lighttpd-webserver:test
+          timeout 30 bash -c 'until curl -sf http://127.0.0.1:8080; do sleep 1; done'
+          curl -f http://127.0.0.1:8080 -o response.html && grep 'It works!' response.html
           docker stop test-server
 
-      # 3. LOGIN (nur wenn Test erfolgreich)
+      # Schritt 6: Container-Cleanup sicherstellen
+      #   "if: always()" stellt sicher, dass dieser Schritt auch dann ausgeführt wird,
+      #   wenn Schritt 5 fehlgeschlagen ist – z. B. wenn der Test selbst abstürzt.
+      #   "|| true" verhindert, dass ein Fehler (Container läuft nicht) den Workflow abbricht.
+      - name: Cleanup test container
+        if: always()
+        run: docker stop test-server 2>/dev/null || true
+
+      # Schritt 7: Beim GHCR anmelden
+      #   Dieser Schritt wird erst erreicht, wenn Build UND Test erfolgreich waren.
+      #   "github.actor" ist der Benutzer, der den Workflow ausgelöst hat.
+      #   "GITHUB_TOKEN" ist ein automatisch bereitgestelltes Token – kein manuelles Secret nötig.
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -40,14 +78,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 4. PUSH (jetzt erst in die Registry)
-      - name: Build and push
+      # Schritt 8: Image für mehrere Architekturen bauen und in GHCR pushen
+      #   linux/amd64: Standard-PCs und Server (x86_64)
+      #   linux/arm64: ARM-Geräte wie Raspberry Pi oder Apple Silicon
+      #   provenance: mode=min – speichert minimale Build-Herkunftsinformation;
+      #   verhindert ungetaggte Meta-SHA-Einträge in GHCR (besser als provenance: false,
+      #   da Attestierungen nicht vollständig deaktiviert werden).
+      - name: Build and push multi-arch image
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          provenance: false # Verhindert ungetaggte Meta-Shas
+          provenance: mode=min
           tags: ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:dev
 
-
+  # Job 2: Aufräumen nach dem Build
+  #   Dieser Job startet erst, wenn Job 1 vollständig und erfolgreich abgeschlossen ist.
+  cleanup:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      # Löscht alle Images in GHCR ohne Tag (sogenannte "untagged"-Images).
+      # Diese entstehen z. B. durch provenance-Metadaten beim Multi-Arch-Build.
+      # min-versions-to-keep: 1 stellt sicher, dass mindestens 1 Version erhalten bleibt.
+      - name: Delete untagged images
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: 'lighttpd-webserver'
+          package-type: 'container'
+          min-versions-to-keep: 1
+          delete-only-untagged-versions: 'true'
