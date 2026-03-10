@@ -81,16 +81,18 @@ jobs:
       # Schritt 8: Image für mehrere Architekturen bauen und in GHCR pushen
       #   linux/amd64: Standard-PCs und Server (x86_64)
       #   linux/arm64: ARM-Geräte wie Raspberry Pi oder Apple Silicon
-      #   provenance: mode=min – speichert minimale Build-Herkunftsinformation;
-      #   verhindert ungetaggte Meta-SHA-Einträge in GHCR (besser als provenance: false,
-      #   da Attestierungen nicht vollständig deaktiviert werden).
+      #   provenance: false und sbom: false deaktivieren das Einbetten von
+      #   Attestierungs-Manifesten in die Manifest-Liste. Ohne diese Einstellung
+      #   fügt buildx zusätzliche Einträge mit "architecture: unknown" hinzu,
+      #   die Clients wie podman beim Pull verwirren und einen Fehler auslösen.
       - name: Build and push multi-arch image
         uses: docker/build-push-action@v5
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          provenance: mode=min
+          provenance: false
+          sbom: false
           tags: ghcr.io/${{ github.repository_owner }}/lighttpd-webserver:dev
 
   # Job 2: Aufräumen nach dem Build
